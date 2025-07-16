@@ -1,0 +1,11 @@
+services:
+  poll-bot4bak:
+    image: poll-bot4bak:v1
+    container_name: poll-bot4bak:v1
+    restart: always
+    privileged: true
+    volumes:
+      - ./bot.py:/app/bot.py
+    env_file:
+      - .env
+    command: ["python","/app/bot.py"]
