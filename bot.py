@@ -40,6 +40,16 @@ async def wea_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === 發起投票 ===
 async def start_poll_by_bot(bot):
+    if active_poll_info["poll_id"] is not None:
+        logging.warning("⚠️ 已有一個投票進行中，跳過新投票")
+
+        try:
+            # 嘗試發送提示訊息（排程不一定有 chat context）
+            await bot.send_message(chat_id=GROUP_CHAT_ID, text="⚠️ 已有一個投票進行中，請先結束再發起新投票")
+        except Exception as e:
+            logging.info(f"排程模式下跳過發送訊息：{e}")
+        return
+
     message = await bot.send_poll(
         chat_id=GROUP_CHAT_ID,
         question="wanna play?",
@@ -49,7 +59,7 @@ async def start_poll_by_bot(bot):
     )
     active_poll_info["message_id"] = message.message_id
     active_poll_info["poll_id"] = message.poll.id
-    logging.info(f"✅ 發起投票（排程）：{message.poll.id}")
+    logging.info(f"✅ 發起投票：{message.poll.id}")
 
 # === 投票紀錄 ===
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,13 +117,20 @@ async def stop_poll_by_bot(bot):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Bot 已啟動")
 
+# === 處理投票指令：檢查是否有進行中的投票 ===
+async def poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if active_poll_info["poll_id"] is not None:
+        await update.message.reply_text("⚠️ 已有一個投票正在進行中，請先 /close 再發起新的")
+        return
+    await start_poll_by_bot(context.bot)
+
 # === 主程式 ===
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("wea", wea_handler))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
-
+    app.add_handler(CommandHandler("poll", poll_handler))
     # 測試用手動發起、結束投票指令
     app.add_handler(CommandHandler("poll", lambda update, context: asyncio.create_task(start_poll_by_bot(context.bot))))
     app.add_handler(CommandHandler("close", lambda update, context: asyncio.create_task(stop_poll_by_bot(context.bot))))
