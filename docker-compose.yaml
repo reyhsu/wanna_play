@@ -1,6 +1,6 @@
 services:
   poll-bot4bak:
-    image: poll-bot4bak:v1
+    image: poll-bot4bak:v2
     container_name: poll-bot4bak
     restart: always
     privileged: true

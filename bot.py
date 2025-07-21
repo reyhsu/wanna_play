@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import requests
 from datetime import timedelta
 from collections import defaultdict
 from telegram import Update
@@ -13,6 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 BOT_TOKEN = ""
 GROUP_CHAT_ID = ""
 POLL_OPTIONS = ["🏀 打", "❌ nope"]
+RADAR_IMAGE_URL = "https://www.cwa.gov.tw/Data/radar/CV1_3600.png"  # 中央氣象局雷達圖
 
 # === 儲存資料 ===
 poll_answers = defaultdict(lambda: defaultdict(list))  # {poll_id: {option_index: [user_id]}}
@@ -23,6 +25,18 @@ active_poll_info = {"message_id": None, "poll_id": None}
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+
+# === /wea 指令：發送雷達圖 ===
+async def wea_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        response = requests.get(RADAR_IMAGE_URL)
+        if response.status_code == 200:
+            await update.message.reply_photo(photo=response.content, caption="🌧️ 台灣雷達回波圖")
+        else:
+            await update.message.reply_text("⚠️ 圖片載入失敗，請稍後再試。")
+    except Exception as e:
+        logging.error(f"錯誤：{e}")
+        await update.message.reply_text("⚠️ 發生錯誤，請稍後再試。")
 
 # === 發起投票 ===
 async def start_poll_by_bot(bot):
@@ -97,6 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("wea", wea_handler))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
 
     # 測試用手動發起、結束投票指令
