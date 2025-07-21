@@ -1,11 +1,14 @@
 services:
   poll-bot4bak:
     image: poll-bot4bak:v1
-    container_name: poll-bot4bak:v1
+    container_name: poll-bot4bak
     restart: always
     privileged: true
     volumes:
       - ./bot.py:/app/bot.py
-    env_file:
-      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     command: ["python","/app/bot.py"]

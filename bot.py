@@ -20,13 +20,13 @@ user_display_names = {}  # {user_id: 顯示名稱}
 active_poll_info = {"message_id": None, "poll_id": None}
 
 # === Logging 設定 ===
-# logging.basicConfig(
-#     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
-# )
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
 # === 發起投票 ===
-async def start_poll(context: ContextTypes.DEFAULT_TYPE):
-    message = await context.bot.send_poll(
+async def start_poll_by_bot(bot):
+    message = await bot.send_poll(
         chat_id=GROUP_CHAT_ID,
         question="wanna play?",
         options=POLL_OPTIONS,
@@ -35,7 +35,7 @@ async def start_poll(context: ContextTypes.DEFAULT_TYPE):
     )
     active_poll_info["message_id"] = message.message_id
     active_poll_info["poll_id"] = message.poll.id
-    logging.info(f"✅ 發起投票：{message.poll.id}")
+    logging.info(f"✅ 發起投票（排程）：{message.poll.id}")
 
 # === 投票紀錄 ===
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,7 +59,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logging.info(f"📥 {user_display_names[user_id]} 投了選項 {selected}")
 
 # === 結束投票 ===
-async def stop_poll(context: ContextTypes.DEFAULT_TYPE):
+async def stop_poll_by_bot(bot):
     poll_id = active_poll_info["poll_id"]
     message_id = active_poll_info["message_id"]
 
@@ -68,7 +68,7 @@ async def stop_poll(context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        result = await context.bot.stop_poll(
+        result = await bot.stop_poll(
             chat_id=GROUP_CHAT_ID,
             message_id=message_id,
         )
@@ -79,7 +79,7 @@ async def stop_poll(context: ContextTypes.DEFAULT_TYPE):
             names = [user_display_names.get(uid, "未知") for uid in user_ids]
             summary += f"{option.text}（{len(user_ids)}人）：{'、'.join(names) or '無'}\n"
 
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
+        await bot.send_message(chat_id=GROUP_CHAT_ID, text=summary)
 
         # 清除資料
         del poll_answers[poll_id]
@@ -100,21 +100,20 @@ def main():
     app.add_handler(PollAnswerHandler(handle_poll_answer))
 
     # 測試用手動發起、結束投票指令
-    app.add_handler(CommandHandler("poll", lambda update, context: asyncio.create_task(start_poll(context))))
-    app.add_handler(CommandHandler("close", lambda update, context: asyncio.create_task(stop_poll(context))))
+    app.add_handler(CommandHandler("poll", lambda update, context: asyncio.create_task(start_poll_by_bot(context.bot))))
+    app.add_handler(CommandHandler("close", lambda update, context: asyncio.create_task(stop_poll_by_bot(context.bot))))
+
     # === 建立排程器 ===
     scheduler = BackgroundScheduler(timezone="Asia/Taipei")
     loop = asyncio.get_event_loop()
 
-    # 每週日 18:00 發起投票
     scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(start_poll(app.bot), loop),
+        lambda: asyncio.run_coroutine_threadsafe(start_poll_by_bot(app.bot), loop),
         trigger="cron", day_of_week="sun", hour=18, minute=0,
     )
 
-    # 每週一 07:00 結束投票
     scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(stop_poll(app.bot), loop),
+        lambda: asyncio.run_coroutine_threadsafe(stop_poll_by_bot(app.bot), loop),
         trigger="cron", day_of_week="mon", hour=7, minute=0,
     )
 
