@@ -1,5 +1,6 @@
 services:
   poll-bot4bak:
+    build: .
     image: poll-bot4bak:v2
     container_name: poll-bot4bak
     restart: always
