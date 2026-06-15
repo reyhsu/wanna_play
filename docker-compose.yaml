@@ -5,6 +5,8 @@ services:
     container_name: poll-bot4bak
     restart: always
     privileged: true
+    env_file:
+      - .env
     volumes:
       - ./bot.py:/app/bot.py
     logging:
