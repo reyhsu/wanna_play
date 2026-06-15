@@ -294,13 +294,33 @@ async def close_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # === 主程式 ===
+async def setup_scheduler(application):
+    """
+    在 Application 啟動後執行，取得正確的 asyncio event loop。
+    """
+    loop = asyncio.get_running_loop()
+    scheduler = BackgroundScheduler(timezone="Asia/Taipei")
+
+    scheduler.add_job(
+        lambda: asyncio.run_coroutine_threadsafe(start_poll_by_bot(application.bot), loop),
+        trigger="cron", day_of_week="sun", hour=18, minute=0,
+    )
+
+    scheduler.add_job(
+        lambda: asyncio.run_coroutine_threadsafe(stop_poll_by_bot(application.bot), loop),
+        trigger="cron", day_of_week="mon", hour=7, minute=0,
+    )
+
+    scheduler.start()
+
+
 def main():
     if not BOT_TOKEN:
         logging.critical("❌ 未設定 BOT_TOKEN 環境變數，程式即將結束。")
         sys.exit(1)
 
     request_config = HTTPXRequest(connect_timeout=15, read_timeout=60, write_timeout=120)
-    app = ApplicationBuilder().token(BOT_TOKEN).request(request_config).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).request(request_config).post_init(setup_scheduler).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_handler))
@@ -309,21 +329,6 @@ def main():
     app.add_handler(CommandHandler("poll", poll_handler))
     app.add_handler(CommandHandler("close", close_handler))
 
-    # === 建立排程器 ===
-    scheduler = BackgroundScheduler(timezone="Asia/Taipei")
-    loop = asyncio.get_event_loop()
-
-    scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(start_poll_by_bot(app.bot), loop),
-        trigger="cron", day_of_week="sun", hour=18, minute=0,
-    )
-
-    scheduler.add_job(
-        lambda: asyncio.run_coroutine_threadsafe(stop_poll_by_bot(app.bot), loop),
-        trigger="cron", day_of_week="mon", hour=7, minute=0,
-    )
-
-    scheduler.start()
     app.run_polling()
 
 
