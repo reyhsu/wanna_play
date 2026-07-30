@@ -3,6 +3,7 @@ import sys
 import logging
 import asyncio
 import requests
+import ipaddress
 from datetime import timedelta
 from collections import defaultdict
 from telegram import Update, InputMediaPhoto
@@ -23,12 +24,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")
 POLL_OPTIONS = ["🏀 打", "❌ nope"]
 
-# Windy 擷取設定 (預設為台灣地區)
-WINDY_RAIN_URL = "https://www.windy.com/24.163/120.648?rain,23.580,120.648,8"
-WINDY_RADAR_URL = "https://www.windy.com/24.163/120.648?radar,23.580,120.648,8"
-SCREENSHOT_WAIT_TIME = 10
-VIEWPORT_WIDTH = 1280
-VIEWPORT_HEIGHT = 800
+# IP 定位與 Windy 擷取設定
+IPINFO_IP_URL = os.getenv("IPINFO_IP_URL", "https://ipinfo.io/ip")
+IPINFO_BASE_URL = os.getenv("IPINFO_BASE_URL", "https://ipinfo.io")
+IPINFO_TIMEOUT = float(os.getenv("IPINFO_TIMEOUT", "10"))
+GEOCODING_URL = os.getenv(
+    "GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"
+)
+GEOCODING_TIMEOUT = float(os.getenv("GEOCODING_TIMEOUT", "10"))
+WINDY_ZOOM = int(os.getenv("WINDY_ZOOM", "8"))
+SCREENSHOT_WAIT_TIME = int(os.getenv("SCREENSHOT_WAIT_TIME", "10"))
+VIEWPORT_WIDTH = int(os.getenv("VIEWPORT_WIDTH", "1280"))
+VIEWPORT_HEIGHT = int(os.getenv("VIEWPORT_HEIGHT", "800"))
 
 # 建立鎖定機制，防止同時執行多個 Playwright 瀏覽器實例導致系統記憶體與 CPU 載入過重
 screenshot_lock = asyncio.Lock()
@@ -44,7 +51,113 @@ logging.basicConfig(
 )
 
 
-async def capture_screenshots(rain_path: str, radar_path: str) -> tuple[bool, bool]:
+class CityNotFoundError(ValueError):
+    """指定的城市無法由地理編碼服務找到。"""
+
+
+def get_ip_location() -> tuple[str, float, float]:
+    """透過目前公網 IP 查詢城市與經緯度。"""
+    ip_response = requests.get(IPINFO_IP_URL, timeout=IPINFO_TIMEOUT)
+    ip_response.raise_for_status()
+    public_ip = ip_response.text.strip()
+    ipaddress.ip_address(public_ip)
+
+    location_response = requests.get(
+        f"{IPINFO_BASE_URL.rstrip('/')}/{public_ip}/json",
+        timeout=IPINFO_TIMEOUT,
+    )
+    location_response.raise_for_status()
+    location = location_response.json()
+
+    city = str(location.get("city") or location.get("region") or location.get("country") or "未知城市")
+    loc = location.get("loc")
+    if not isinstance(loc, str) or "," not in loc:
+        raise ValueError("ipinfo 回應缺少有效的 loc 經緯度")
+
+    latitude_text, longitude_text = loc.split(",", 1)
+    latitude = float(latitude_text)
+    longitude = float(longitude_text)
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("ipinfo 回傳的經緯度超出有效範圍")
+
+    logging.info("目前公網 IP 定位完成：%s (%s, %s)", city, latitude, longitude)
+    return city, latitude, longitude
+
+
+def geocode_city(city_query: str) -> tuple[str, float, float]:
+    """使用 Open-Meteo Geocoding 將城市名稱轉換為顯示名稱與經緯度。"""
+    query = city_query.strip()
+    if not query:
+        raise CityNotFoundError("未提供城市名稱")
+
+    params = {
+        "name": query,
+        "count": 10,
+        "language": "zh",
+        "format": "json",
+    }
+
+    # 支援「Tokyo, JP」這類帶 ISO 國碼的輸入，降低同名城市誤判。
+    if "," in query:
+        name, possible_country_code = query.rsplit(",", 1)
+        possible_country_code = possible_country_code.strip()
+        if len(possible_country_code) == 2 and possible_country_code.isalpha():
+            params["name"] = name.strip()
+            params["countryCode"] = possible_country_code.upper()
+
+    response = requests.get(
+        GEOCODING_URL,
+        params=params,
+        timeout=GEOCODING_TIMEOUT,
+    )
+    response.raise_for_status()
+    results = response.json().get("results") or []
+    if not results:
+        raise CityNotFoundError(f"找不到城市：{city_query}")
+
+    result = results[0]
+    try:
+        latitude = float(result["latitude"])
+        longitude = float(result["longitude"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("地理編碼服務回傳的經緯度無效") from error
+
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("地理編碼服務回傳的經緯度超出有效範圍")
+
+    location_parts = [result.get("name"), result.get("admin1"), result.get("country")]
+    display_name = "、".join(
+        dict.fromkeys(str(part) for part in location_parts if part)
+    )
+    if not display_name:
+        display_name = city_query
+
+    logging.info(
+        "城市定位完成：%s -> %s (%s, %s)",
+        city_query,
+        display_name,
+        latitude,
+        longitude,
+    )
+    return display_name, latitude, longitude
+
+
+def build_windy_urls(latitude: float, longitude: float) -> tuple[str, str]:
+    """依經緯度建立 Windy 雨量與雷達頁面 URL。"""
+    coordinates = f"{latitude:.3f},{longitude:.3f}"
+    base_url = f"https://www.windy.com/{latitude:.3f}/{longitude:.3f}"
+    return (
+        f"{base_url}?rain,{coordinates},{WINDY_ZOOM}",
+        f"{base_url}?radar,{coordinates},{WINDY_ZOOM}",
+    )
+
+
+async def capture_screenshots(
+    rain_path: str,
+    radar_path: str,
+    rain_url: str,
+    radar_url: str,
+) -> tuple[bool, bool]:
     """
     使用 Playwright 平行擷取 Windy 的雨量與雷達回波網頁畫面並儲存為高品質 JPEG
     """
@@ -78,8 +191,8 @@ async def capture_screenshots(rain_path: str, radar_path: str) -> tuple[bool, bo
             logging.info("同時連線至累積雨量與雷達回波頁面...")
             # 平行發起請求並等待基本網頁載入
             results = await asyncio.gather(
-                page_rain.goto(WINDY_RAIN_URL, wait_until="load", timeout=45000),
-                page_radar.goto(WINDY_RADAR_URL, wait_until="load", timeout=45000),
+                page_rain.goto(rain_url, wait_until="load", timeout=45000),
+                page_radar.goto(radar_url, wait_until="load", timeout=45000),
                 return_exceptions=True
             )
             
@@ -138,7 +251,10 @@ async def capture_screenshots(rain_path: str, radar_path: str) -> tuple[bool, bo
 # === /wea 指令：發送雷達與雨量預報圖 ===
 async def wea_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    status_msg = await update.message.reply_text("⏳ 正在初始化瀏覽器... 預計需要 10-15 秒，請稍候...")
+    city_query = " ".join(context.args).strip()
+    status_msg = await update.message.reply_text(
+        "⏳ 正在查詢位置... 預計需要 10-15 秒，請稍候..."
+    )
     
     rain_path = f"/tmp/windy_rain_{chat_id}.jpg"
     radar_path = f"/tmp/windy_radar_{chat_id}.jpg"
@@ -148,21 +264,44 @@ async def wea_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     async with screenshot_lock:
         try:
-            await status_msg.edit_text("📸 連線至 Windy 中... 正在載入累積雨量預報與即時雷達圖...")
-            rain_success, radar_success = await capture_screenshots(rain_path, radar_path)
+            if city_query:
+                await status_msg.edit_text(f"🔎 正在搜尋城市：{city_query}...")
+                city, latitude, longitude = await asyncio.to_thread(
+                    geocode_city, city_query
+                )
+            else:
+                await status_msg.edit_text("📍 正在查詢目前 IP 與所在城市...")
+                city, latitude, longitude = await asyncio.to_thread(get_ip_location)
+
+            rain_url, radar_url = build_windy_urls(latitude, longitude)
+
+            await status_msg.edit_text(
+                f"📸 已定位至 {city}，正在載入當地累積雨量預報與即時雷達圖..."
+            )
+            rain_success, radar_success = await capture_screenshots(
+                rain_path, radar_path, rain_url, radar_url
+            )
             
             if rain_success and radar_success:
                 await status_msg.edit_text("📤 擷取成功！正在上傳至 Telegram...")
                 with open(rain_path, 'rb') as f_rain, open(radar_path, 'rb') as f_radar:
                     media_group = [
-                        InputMediaPhoto(media=f_rain, caption="🌧️ **Windy 累積雨量預報圖** (台灣地區)", parse_mode="Markdown"),
-                        InputMediaPhoto(media=f_radar, caption="📡 **Windy 即時雷達回波圖** (台灣地區)", parse_mode="Markdown")
+                        InputMediaPhoto(media=f_rain, caption=f"🌧️ **Windy 累積雨量預報圖** ({city})", parse_mode="Markdown"),
+                        InputMediaPhoto(media=f_radar, caption=f"📡 **Windy 即時雷達回波圖** ({city})", parse_mode="Markdown")
                     ]
                     await update.message.reply_media_group(media=media_group, write_timeout=60, read_timeout=60)
                 await status_msg.delete()
             else:
                 await status_msg.edit_text("❌ 抱歉，擷取 Windy 畫面失敗（連線逾時或官網異常），請稍候再試！")
                 
+        except CityNotFoundError:
+            await status_msg.edit_text(
+                f"❌ 找不到城市「{city_query}」。請嘗試更完整的名稱，例如："
+                "\n/wea Taipei, TW\n/wea Tokyo, JP"
+            )
+        except requests.RequestException as e:
+            logging.error(f"查詢位置服務失敗: {e}", exc_info=True)
+            await status_msg.edit_text("❌ 位置查詢服務目前無法連線，請稍候再試。")
         except Exception as e:
             logging.error(f"處理天氣請求時發生未預期錯誤: {e}", exc_info=True)
             await status_msg.edit_text("❌ 處理您的請求時發生錯誤，請稍候再試。")
@@ -263,8 +402,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start - 啟動 Bot，確認 Bot 運作狀態。\n"
         "• /help - 顯示此幫助選單，列出所有可用指令與詳細用法。\n\n"
         "📡 *天氣預報*\n"
-        "• /wea - 擷取 Windy 台灣累積雨量預報圖與即時雷達回波圖並發送相簿。\n"
-        "  _(系統會於背景以 headless 瀏覽器載入 Windy 最新畫面，擷取雙圖預計需 10-15 秒。內建排隊鎖，若多人同時查詢時會加入佇列排隊。)_\n\n"
+        "• /wea - 依 Bot 目前公網 IP 定位城市，擷取當地 Windy 累積雨量預報圖與即時雷達回波圖並發送相簿。\n"
+        "• /wea 城市名稱 - 搜尋指定城市，例如 `/wea taipei`、`/wea Tokyo, JP`。\n"
+        "  _(系統會取得位置座標，再以 headless 瀏覽器載入 Windy 最新畫面；擷取雙圖預計需 10-15 秒。)_\n\n"
         "🗳️ *投票功能*\n"
         "• /poll - 手動發起「wanna play?」非匿名投票。\n"
         "• /close - 手動結束當前投票，並發布投票結果（包含各選項的人員統計與人數）。\n\n"
