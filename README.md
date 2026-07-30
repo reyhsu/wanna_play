@@ -2,7 +2,7 @@
 wanna play? A Telegram Bot for initiating polls and fetching weather maps!
 
 ## 🌟 新功能介紹 (Windy 氣象整合)
-現在，原有的 `/wea` 指令已被重構並升級！當用戶輸入 `/wea` 時，Bot 會先透過 ipinfo 查詢執行主機的公網 IP、城市與經緯度，再於背景啟動 headless Chromium 瀏覽器，平行載入該城市的 **Windy 累積雨量預報圖** 與 **即時雷達回波圖**，並進行高畫質、輕量化的 JPEG 截圖，最後以「相簿」的形式將兩張天氣圖一起發送。
+現在，原有的 `/wea` 指令已被重構並升級！直接輸入 `/wea` 時，Bot 會透過 ipinfo 查詢執行主機的公網 IP 與位置；輸入 `/wea taipei`、`/wea 東京` 或 `/wea Tokyo, JP` 時，則會透過 Open-Meteo Geocoding 查詢指定城市的經緯度。取得座標後，Bot 會在背景啟動 headless Chromium 瀏覽器，平行載入該城市的 **Windy 累積雨量預報圖** 與 **即時雷達回波圖**，最後以相簿形式發送兩張天氣圖。
 
 ### 技術亮點：
 1. **異步平行分頁載入**：擷取雙圖僅需 10 秒。
